@@ -1,13 +1,16 @@
 """
 Minimal web app for Webflow Article GA4 Traffic Tracker.
 One page with a "Refresh article data" button. Protected by TRIGGER_TOKEN (in URL or form).
+Streams sync log to the browser in real time so you see output even if the request is killed later.
 """
+import html
 import os
 import sys
+import threading
 import traceback
-from io import StringIO
+from queue import Empty, Queue
 
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, Response, stream_with_context
 
 from main import main as run_sync
 
@@ -50,28 +53,28 @@ INDEX_HTML = """
 </html>
 """
 
-RESULT_HTML = """
-<!DOCTYPE html>
+# Streaming: send log to browser as it happens so you see output even if request is killed
+STREAM_HTML_HEAD = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sync {{ status }}</title>
+  <title>Sync in progress</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
     .log { background: #f5f5f5; padding: 1rem; margin-top: 1rem; white-space: pre-wrap; font-size: 0.875rem; }
-    .success { color: #0a0; }
-    .error { color: #c00; }
     a { color: #06c; }
   </style>
 </head>
 <body>
-  <h1>Sync {{ status }}</h1>
+  <h1>Sync in progress...</h1>
+  <p><strong>Log streams below. If it stops, the last line is where it failed.</strong></p>
   <p><a href="{{ back_url }}">Back</a></p>
-  <pre class="log {{ log_class }}">{{ log_output }}</pre>
+  <pre class="log">"""
+
+STREAM_HTML_TAIL = """</pre>
 </body>
-</html>
-"""
+</html>"""
 
 
 @app.route("/")
@@ -93,31 +96,62 @@ def index():
 def run():
     if not _token_ok():
         return "Forbidden", 403
-    log = StringIO()
-    old_stdout, old_stderr = sys.stdout, sys.stderr
-    sys.stdout = sys.stderr = log
-    exit_code = 0
-    try:
-        run_sync()
-    except SystemExit as e:
-        exit_code = e.code if isinstance(e.code, int) else 1
-    except Exception as e:
-        exit_code = 1
-        log.write(f"Error: {e}\n")
-        log.write(traceback.format_exc())
-    finally:
-        sys.stdout, sys.stderr = old_stdout, old_stderr
-    log_output = log.getvalue() or "(no output)"
-    status = "succeeded" if exit_code == 0 else "failed"
-    log_class = "success" if exit_code == 0 else "error"
     token = request.args.get("token") or request.form.get("token", "")
     back_url = "/" + (f"?token={token}" if token else "")
-    return render_template_string(
-        RESULT_HTML,
-        status=status,
-        log_output=log_output,
-        log_class=log_class,
-        back_url=back_url,
+
+    log_queue = Queue()
+    exit_code_ref = [0]
+    status_ref = ["running"]
+
+    class QueueWriter:
+        def write(self, s):
+            if s:
+                log_queue.put(s)
+        def flush(self):
+            pass
+
+    def run_sync_in_thread():
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        try:
+            sys.stdout = sys.stderr = QueueWriter()
+            run_sync()
+            exit_code_ref[0] = 0
+            status_ref[0] = "succeeded"
+        except SystemExit as e:
+            exit_code_ref[0] = e.code if isinstance(e.code, int) else 1
+            status_ref[0] = "failed"
+        except Exception as e:
+            exit_code_ref[0] = 1
+            status_ref[0] = "failed"
+            QueueWriter().write(f"Error: {e}\n")
+            QueueWriter().write(traceback.format_exc())
+        finally:
+            sys.stdout, sys.stderr = old_stdout, old_stderr
+            log_queue.put(None)
+
+    thread = threading.Thread(target=run_sync_in_thread)
+    thread.start()
+
+    def generate():
+        yield render_template_string(STREAM_HTML_HEAD, back_url=back_url)
+        while True:
+            try:
+                chunk = log_queue.get(timeout=0.3)
+            except Empty:
+                yield ""
+                continue
+            if chunk is None:
+                break
+            yield html.escape(chunk)
+        # Final status line
+        status = status_ref[0]
+        yield "\n\n--- " + status.upper() + " ---\n"
+        yield STREAM_HTML_TAIL
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/html",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
