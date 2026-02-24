@@ -2,6 +2,7 @@
 Write article + traffic data to a Google Sheet. Clears the sheet and writes fresh data.
 """
 import json
+import time
 from datetime import datetime
 from typing import Any
 
@@ -108,11 +109,23 @@ def write_article_traffic(rows: list[dict[str, Any]]) -> None:
     all_cells = [meta_row] + [header_row] + data_rows
     worksheet.clear()
     if all_cells:
-        # Batch updates (500 rows per request) to avoid timeouts and rate limits
-        batch_size = 500
+        # Smaller batches (250 rows) to reduce chance of connection reset / rate limit
+        batch_size = 250
+        max_retries = 3
         for i in range(0, len(all_cells), batch_size):
             chunk = all_cells[i : i + batch_size]
             start_cell = f"A{i + 1}"
-            worksheet.update(chunk, start_cell)
-            print(f"  Wrote rows {i + 1}-{i + len(chunk)}...")
+            for attempt in range(max_retries):
+                try:
+                    worksheet.update(chunk, start_cell)
+                    print(f"  Wrote rows {i + 1}-{i + len(chunk)}...")
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait = (attempt + 1) * 2
+                        print(f"  Sheet write failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait}s...")
+                        time.sleep(wait)
+                    else:
+                        print(f"  Sheet write failed after {max_retries} attempts: {e}")
+                        raise
     print(f"[OK] Wrote {len(rows)} rows to sheet '{SHEET_NAME}' (last updated: {timestamp})")
