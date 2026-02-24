@@ -4,6 +4,7 @@ One page with a "Refresh article data" button. Protected by TRIGGER_TOKEN (in UR
 """
 import os
 import sys
+import traceback
 from io import StringIO
 
 from flask import Flask, request, render_template_string
@@ -103,6 +104,7 @@ def run():
     except Exception as e:
         exit_code = 1
         log.write(f"Error: {e}\n")
+        log.write(traceback.format_exc())
     finally:
         sys.stdout, sys.stderr = old_stdout, old_stderr
     log_output = log.getvalue() or "(no output)"
