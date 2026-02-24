@@ -108,5 +108,11 @@ def write_article_traffic(rows: list[dict[str, Any]]) -> None:
     all_cells = [meta_row] + [header_row] + data_rows
     worksheet.clear()
     if all_cells:
-        worksheet.update(all_cells, "A1")
+        # Batch updates (500 rows per request) to avoid timeouts and rate limits
+        batch_size = 500
+        for i in range(0, len(all_cells), batch_size):
+            chunk = all_cells[i : i + batch_size]
+            start_cell = f"A{i + 1}"
+            worksheet.update(chunk, start_cell)
+            print(f"  Wrote rows {i + 1}-{i + len(chunk)}...")
     print(f"[OK] Wrote {len(rows)} rows to sheet '{SHEET_NAME}' (last updated: {timestamp})")
