@@ -8,7 +8,13 @@ Older articles keep their last-known traffic from the sheet. Run manually or on 
 import sys
 from datetime import datetime, timedelta
 
-from config import BACKFILL_YEAR, REFRESH_DAYS, validate_config
+from config import (
+    BACKFILL_YEAR,
+    HYDRATE_MISSING_LIMIT,
+    HYDRATE_ZERO_OLDER,
+    REFRESH_DAYS,
+    validate_config,
+)
 from webflow_client import get_articles
 from ga4_client import fetch_traffic_by_path
 from sheets_writer import read_article_traffic, write_article_traffic
@@ -24,6 +30,8 @@ def _parse_publish_date(s: str):
     """Return (date, True) if s is valid date (YYYY-MM-DD or YYYY-MM-DD HH:MM) else (None, False)."""
     if not s or not (s := s.strip()):
         return None, False
+    if s.endswith(" ET"):
+        s = s[:-3].strip()
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(s[:16] if len(s) > 16 else s, fmt)
@@ -40,6 +48,15 @@ def _is_recent(article: dict) -> bool:
         return False
     cutoff = (datetime.now() - timedelta(days=REFRESH_DAYS)).date()
     return pub_date >= cutoff
+
+
+def _is_zero_history(prev: dict) -> bool:
+    """True when an existing sheet row has all traffic metrics at zero."""
+    return (
+        int(prev.get("Sessions", 0)) == 0
+        and int(prev.get("Users", 0)) == 0
+        and int(prev.get("Pageviews", 0)) == 0
+    )
 
 
 def main() -> None:
@@ -103,6 +120,53 @@ def main() -> None:
         else:
             print("No recent articles; skipping GA4.")
 
+        # One-time historical hydration:
+        # 1) older articles with no row in the sheet
+        # 2) optional: older articles with existing row but all-zero metrics
+        older_missing = [a for a in articles if (not _is_recent(a)) and (a["url"] not in existing_sheet)]
+        older_zero = []
+        if HYDRATE_ZERO_OLDER:
+            older_zero = [
+                a
+                for a in articles
+                if (not _is_recent(a))
+                and (a["url"] in existing_sheet)
+                and _is_zero_history(existing_sheet.get(a["url"], {}))
+            ]
+
+        hydrate_pool = {}
+        for a in older_missing + older_zero:
+            hydrate_pool[a["url"]] = a
+        hydrate_candidates_all = list(hydrate_pool.values())
+        hydrate_candidates_all.sort(
+            key=lambda a: _parse_publish_date(a.get("publish_date", "") or "")[0] or datetime.min.date(),
+            reverse=True,
+        )
+        hydrate_candidates = (
+            hydrate_candidates_all[:HYDRATE_MISSING_LIMIT] if HYDRATE_MISSING_LIMIT > 0 else []
+        )
+        historical_traffic = {}
+        if hydrate_candidates:
+            hydro_end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+            hydro_start = "2000-01-01"
+            print(
+                f"Hydrating all-time GA4 for {len(hydrate_candidates)} older articles "
+                f"(missing rows: {len(older_missing)}, zero rows: {len(older_zero)})..."
+            )
+            historical_traffic = fetch_traffic_by_path(
+                [a["path"] for a in hydrate_candidates],
+                start_date=hydro_start,
+                end_date=hydro_end,
+            )
+            remaining = len(hydrate_candidates_all) - len(hydrate_candidates)
+            if remaining > 0:
+                print(
+                    f"Hydration limit reached; {remaining} older articles still need hydration. "
+                    "They will be hydrated on future runs."
+                )
+        elif hydrate_candidates_all and HYDRATE_MISSING_LIMIT == 0:
+            print("Historical hydration disabled (HYDRATE_MISSING_LIMIT=0).")
+
         rows = []
         for a in articles:
             path = a["path"]
@@ -119,6 +183,14 @@ def main() -> None:
                 })
             else:
                 prev = existing_sheet.get(url, {})
+                should_replace_from_hydration = (not prev) or (HYDRATE_ZERO_OLDER and _is_zero_history(prev))
+                if should_replace_from_hydration and path in historical_traffic:
+                    t = historical_traffic.get(path, {})
+                    prev = {
+                        "Sessions": t.get("sessions", 0),
+                        "Users": t.get("totalUsers", 0),
+                        "Pageviews": t.get("screenPageViews", 0),
+                    }
                 rows.append({
                     "Title": a["title"],
                     "URL": url,

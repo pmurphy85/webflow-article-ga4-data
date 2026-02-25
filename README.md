@@ -48,6 +48,8 @@ So the script runs when your computer is off and your content person can trigger
 
    - `TRAFFIC_DAYS` (default `30`)
    - `REFRESH_DAYS` (default `7`)
+   - `HYDRATE_MISSING_LIMIT` (default `200`; one-time all-time fill for older articles missing sheet history)
+   - `HYDRATE_ZERO_OLDER` (default `false`; one-time all-time refill for older rows currently at 0/0/0)
    - `BACKFILL_YEAR` (one-time full-year backfill)
 
 4. **Deploy.** Railway and Render will use the `Procfile` (`web: gunicorn ...`) and `requirements.txt` automatically.
@@ -87,6 +89,11 @@ Important behavior:
 3. Confirm `WEBFLOW_URL_PREFIX` matches your actual article URL path.
 4. If GA4 values look like zeros, verify the GA4 property is the same property tracking the site path data.
 5. For first historical load, temporarily set a wider `REFRESH_DAYS` or use one-time `BACKFILL_YEAR`.
+6. For existing older rows stuck at zero, run one cleanup pass:
+   - set `HYDRATE_ZERO_OLDER=true`
+   - set `HYDRATE_MISSING_LIMIT` high enough for your cleanup batch
+   - run sync
+   - set `HYDRATE_ZERO_OLDER=false` again
 
 ## Google-native fallback
 

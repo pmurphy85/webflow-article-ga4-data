@@ -59,12 +59,39 @@ def _parse_int_env(name: str, default: int) -> tuple[int, str]:
         return default, f"{name} must be an integer (got '{raw}')"
 
 
+def _parse_bool_env(name: str, default: bool = False) -> tuple[bool, str]:
+    """Parse boolean env var from common true/false strings."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default, ""
+    v = raw.strip().lower()
+    if v in ("1", "true", "yes", "y", "on"):
+        return True, ""
+    if v in ("0", "false", "no", "n", "off", ""):
+        return False, ""
+    return default, f"{name} must be a boolean (true/false, 1/0, yes/no)"
+
+
 TRAFFIC_DAYS, _traffic_days_err = _parse_int_env("TRAFFIC_DAYS", 30)
 # Only fetch GA4 for articles published in the last N days; older articles keep last-known traffic from sheet
 REFRESH_DAYS, _refresh_days_err = _parse_int_env("REFRESH_DAYS", 7)
+# One-time hydration per run for older articles missing historical traffic in sheet
+# Set to 0 to disable hydration.
+HYDRATE_MISSING_LIMIT, _hydrate_missing_limit_err = _parse_int_env("HYDRATE_MISSING_LIMIT", 200)
+# Optional one-time rehydration for older rows that already exist in sheet but have all zeros.
+HYDRATE_ZERO_OLDER, _hydrate_zero_older_err = _parse_bool_env("HYDRATE_ZERO_OLDER", False)
 # Optional one-time backfill: when set (e.g. "2025"), only that year's articles with full-year GA4 traffic
 BACKFILL_YEAR = os.getenv("BACKFILL_YEAR", "").strip()
-_PARSE_ERRORS = [e for e in (_traffic_days_err, _refresh_days_err) if e]
+_PARSE_ERRORS = [
+    e
+    for e in (
+        _traffic_days_err,
+        _refresh_days_err,
+        _hydrate_missing_limit_err,
+        _hydrate_zero_older_err,
+    )
+    if e
+]
 
 
 def _credentials_ok() -> tuple[bool, str]:
@@ -104,6 +131,8 @@ def validate_config() -> list[str]:
         errors.append("TRAFFIC_DAYS (must be >= 1)")
     if REFRESH_DAYS < 1:
         errors.append("REFRESH_DAYS (must be >= 1)")
+    if HYDRATE_MISSING_LIMIT < 0:
+        errors.append("HYDRATE_MISSING_LIMIT (must be >= 0)")
     return errors
 
 
@@ -128,6 +157,8 @@ def get_safe_diagnostics() -> dict:
         "runtime": {
             "traffic_days": TRAFFIC_DAYS,
             "refresh_days": REFRESH_DAYS,
+            "hydrate_missing_limit": HYDRATE_MISSING_LIMIT,
+            "hydrate_zero_older": HYDRATE_ZERO_OLDER,
             "backfill_year": BACKFILL_YEAR or None,
             "parse_errors": list(_PARSE_ERRORS),
         },
