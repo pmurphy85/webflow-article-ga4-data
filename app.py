@@ -50,6 +50,8 @@ INDEX_HTML = """
     body { font-family: system-ui, sans-serif; max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
     h1 { font-size: 1.25rem; }
     button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
+    input { font-size: 1rem; padding: 0.45rem 0.55rem; width: 100%; box-sizing: border-box; margin: 0.25rem 0 0.75rem; }
+    label { display: block; font-size: 0.9rem; margin-top: 0.5rem; }
     .log { background: #f5f5f5; padding: 1rem; margin-top: 1rem; white-space: pre-wrap; font-size: 0.875rem; }
     .success { color: #0a0; }
     .error { color: #c00; }
@@ -58,8 +60,16 @@ INDEX_HTML = """
 <body>
   <h1>Article traffic sync</h1>
   <p>Updates the Google Sheet with Webflow articles and GA4 traffic.</p>
-  <form method="post" action="{{ run_url }}">
-    <input type="hidden" name="token" value="{{ token }}">
+  {% if requires_token %}
+  <p><strong>Trigger token required.</strong> Paste it below, then run sync.</p>
+  {% endif %}
+  <form method="post" action="/run">
+    {% if requires_token %}
+    <label for="token">Trigger token</label>
+    <input id="token" name="token" type="password" value="{{ token }}" autocomplete="off" required>
+    {% else %}
+    <input type="hidden" name="token" value="">
+    {% endif %}
     <button type="submit">Refresh article data</button>
   </form>
 </body>
@@ -92,15 +102,10 @@ STREAM_HTML_TAIL = """</pre>
 
 @app.route("/")
 def index():
-    if not _token_ok():
-        return "Forbidden", 403
     token = request.args.get("token", "")
-    run_url = "/run"
-    if token:
-        run_url = f"/run?token={token}"
     return render_template_string(
         INDEX_HTML,
-        run_url=run_url,
+        requires_token=bool(TRIGGER_TOKEN),
         token=token,
     )
 
