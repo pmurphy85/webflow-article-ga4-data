@@ -148,7 +148,8 @@ def main() -> None:
         historical_traffic = {}
         if hydrate_candidates:
             hydro_end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-            hydro_start = "2000-01-01"
+            # GA4 Data API rejects dates earlier than the supported lower bound.
+            hydro_start = "2015-08-14"
             print(
                 f"Hydrating all-time GA4 for {len(hydrate_candidates)} older articles "
                 f"(missing rows: {len(older_missing)}, zero rows: {len(older_zero)})..."
