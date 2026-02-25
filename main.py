@@ -148,8 +148,18 @@ def main() -> None:
         historical_traffic = {}
         if hydrate_candidates:
             hydro_end = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-            # GA4 Data API rejects dates earlier than the supported lower bound.
-            hydro_start = "2015-08-14"
+            # Start hydration at the oldest publish date in this batch (GA4-safe floor).
+            ga4_floor_date = datetime(2015, 8, 14).date()
+            oldest_pub_date = min(
+                (
+                    _parse_publish_date(a.get("publish_date", "") or "")[0]
+                    for a in hydrate_candidates
+                ),
+                default=ga4_floor_date,
+            )
+            if oldest_pub_date is None:
+                oldest_pub_date = ga4_floor_date
+            hydro_start = max(oldest_pub_date, ga4_floor_date).strftime("%Y-%m-%d")
             print(
                 f"Hydrating all-time GA4 for {len(hydrate_candidates)} older articles "
                 f"(missing rows: {len(older_missing)}, zero rows: {len(older_zero)})..."
