@@ -6,6 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 # Max seconds for any single Sheets API call (clear or batch update)
 SHEETS_REQUEST_TIMEOUT = 120
@@ -19,6 +20,7 @@ from config import GOOGLE_SHEET_ID, GOOGLE_SERVICE_ACCOUNT_JSON, SHEET_NAME, SER
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 MAX_RETRIES = 4
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+EASTERN = ZoneInfo("America/New_York")
 
 
 def _is_retryable_error(e: Exception) -> bool:
@@ -114,7 +116,7 @@ def write_article_traffic(rows: list[dict[str, Any]]) -> None:
         )
 
     headers = ["Title", "Publish Date", "Pageviews", "URL", "Sessions", "Users"]
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    timestamp = datetime.now(EASTERN).strftime("%Y-%m-%d %H:%M ET")
     meta_row = [f"Last Updated: {timestamp}"]
     header_row = headers
     def _num(val):
