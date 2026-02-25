@@ -3,8 +3,12 @@ Write article + traffic data to a Google Sheet. Clears the sheet and writes fres
 """
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from typing import Any
+
+# Max seconds for any single Sheets API call (clear or batch update)
+SHEETS_REQUEST_TIMEOUT = 120
 
 import gspread
 from google.oauth2 import service_account
@@ -107,19 +111,32 @@ def write_article_traffic(rows: list[dict[str, Any]]) -> None:
     ]
 
     all_cells = [meta_row] + [header_row] + data_rows
-    worksheet.clear()
+    print("Clearing sheet...")
+    try:
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            ex.submit(worksheet.clear).result(timeout=SHEETS_REQUEST_TIMEOUT)
+    except FuturesTimeoutError:
+        raise RuntimeError(f"Sheet clear timed out after {SHEETS_REQUEST_TIMEOUT}s. Try a smaller sheet or check network.") from None
+    print("Cleared. Writing in batches...")
     if all_cells:
-        # Smaller batches (250 rows) to reduce chance of connection reset / rate limit
         batch_size = 250
         max_retries = 3
         for i in range(0, len(all_cells), batch_size):
             chunk = all_cells[i : i + batch_size]
             start_cell = f"A{i + 1}"
+            print(f"  Writing rows {i + 1}-{i + len(chunk)}...")
             for attempt in range(max_retries):
                 try:
-                    worksheet.update(chunk, start_cell)
-                    print(f"  Wrote rows {i + 1}-{i + len(chunk)}...")
+                    with ThreadPoolExecutor(max_workers=1) as ex:
+                        ex.submit(worksheet.update, chunk, start_cell).result(timeout=SHEETS_REQUEST_TIMEOUT)
+                    print(f"  Wrote rows {i + 1}-{i + len(chunk)}.")
                     break
+                except FuturesTimeoutError:
+                    if attempt < max_retries - 1:
+                        print(f"  Batch timed out (attempt {attempt + 1}/{max_retries}). Retrying in 2s...")
+                        time.sleep(2)
+                    else:
+                        raise RuntimeError(f"Sheet batch write timed out after {SHEETS_REQUEST_TIMEOUT}s (rows {i + 1}-{i + len(chunk)}).") from None
                 except Exception as e:
                     if attempt < max_retries - 1:
                         wait = (attempt + 1) * 2
