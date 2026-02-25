@@ -11,11 +11,33 @@ from typing import Any
 SHEETS_REQUEST_TIMEOUT = 120
 
 import gspread
+from gspread.exceptions import APIError
 from google.oauth2 import service_account
 
 from config import GOOGLE_SHEET_ID, GOOGLE_SERVICE_ACCOUNT_JSON, SHEET_NAME, SERVICE_ACCOUNT_FILE
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+MAX_RETRIES = 4
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+
+def _is_retryable_error(e: Exception) -> bool:
+    if isinstance(e, APIError):
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        return status in RETRYABLE_STATUS_CODES
+    return isinstance(e, (TimeoutError, FuturesTimeoutError, ConnectionError))
+
+
+def _retry_call(fn, stage: str):
+    """Run a callable with retry/backoff for transient Google Sheets failures."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt < MAX_RETRIES and _is_retryable_error(e):
+                time.sleep(2 ** (attempt - 1))
+                continue
+            raise RuntimeError(f"Google Sheets failed at '{stage}' after {attempt} attempt(s): {e}") from e
 
 
 def get_sheets_client() -> gspread.Client:
@@ -38,15 +60,15 @@ def read_article_traffic() -> dict[str, dict[str, Any]]:
     """
     client = get_sheets_client()
     try:
-        spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+        spreadsheet = _retry_call(lambda: client.open_by_key(GOOGLE_SHEET_ID), "open_by_key")
     except gspread.SpreadsheetNotFound:
         return {}
     try:
-        worksheet = spreadsheet.worksheet(SHEET_NAME)
+        worksheet = _retry_call(lambda: spreadsheet.worksheet(SHEET_NAME), "worksheet_lookup")
     except gspread.WorksheetNotFound:
         return {}
     try:
-        all_values = worksheet.get_all_values()
+        all_values = _retry_call(lambda: worksheet.get_all_values(), "read_all_values")
     except Exception:
         return {}
     # Row 0 = meta, row 1 = headers, row 2+ = data (Title=0, Publish Date=1, Pageviews=2, URL=3, Sessions=4, Users=5)
@@ -82,11 +104,14 @@ def write_article_traffic(rows: list[dict[str, Any]]) -> None:
     Sheet is cleared and rewritten; first row is "Last Updated: <timestamp>", then headers, then data (caller should sort by Publish Date before passing).
     """
     client = get_sheets_client()
-    spreadsheet = client.open_by_key(GOOGLE_SHEET_ID)
+    spreadsheet = _retry_call(lambda: client.open_by_key(GOOGLE_SHEET_ID), "open_by_key")
     try:
-        worksheet = spreadsheet.worksheet(SHEET_NAME)
+        worksheet = _retry_call(lambda: spreadsheet.worksheet(SHEET_NAME), "worksheet_lookup")
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=10)
+        worksheet = _retry_call(
+            lambda: spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=10),
+            "worksheet_create",
+        )
 
     headers = ["Title", "Publish Date", "Pageviews", "URL", "Sessions", "Users"]
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -114,35 +139,23 @@ def write_article_traffic(rows: list[dict[str, Any]]) -> None:
     print("Clearing sheet...")
     try:
         with ThreadPoolExecutor(max_workers=1) as ex:
-            ex.submit(worksheet.clear).result(timeout=SHEETS_REQUEST_TIMEOUT)
+            _retry_call(
+                lambda: ex.submit(worksheet.clear).result(timeout=SHEETS_REQUEST_TIMEOUT),
+                "worksheet_clear",
+            )
     except FuturesTimeoutError:
         raise RuntimeError(f"Sheet clear timed out after {SHEETS_REQUEST_TIMEOUT}s. Try a smaller sheet or check network.") from None
     print("Cleared. Writing in batches...")
     if all_cells:
         batch_size = 250
-        max_retries = 3
         for i in range(0, len(all_cells), batch_size):
             chunk = all_cells[i : i + batch_size]
             start_cell = f"A{i + 1}"
             print(f"  Writing rows {i + 1}-{i + len(chunk)}...")
-            for attempt in range(max_retries):
-                try:
-                    with ThreadPoolExecutor(max_workers=1) as ex:
-                        ex.submit(worksheet.update, chunk, start_cell).result(timeout=SHEETS_REQUEST_TIMEOUT)
-                    print(f"  Wrote rows {i + 1}-{i + len(chunk)}.")
-                    break
-                except FuturesTimeoutError:
-                    if attempt < max_retries - 1:
-                        print(f"  Batch timed out (attempt {attempt + 1}/{max_retries}). Retrying in 2s...")
-                        time.sleep(2)
-                    else:
-                        raise RuntimeError(f"Sheet batch write timed out after {SHEETS_REQUEST_TIMEOUT}s (rows {i + 1}-{i + len(chunk)}).") from None
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        wait = (attempt + 1) * 2
-                        print(f"  Sheet write failed (attempt {attempt + 1}/{max_retries}): {e}. Retrying in {wait}s...")
-                        time.sleep(wait)
-                    else:
-                        print(f"  Sheet write failed after {max_retries} attempts: {e}")
-                        raise
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                _retry_call(
+                    lambda: ex.submit(worksheet.update, chunk, start_cell).result(timeout=SHEETS_REQUEST_TIMEOUT),
+                    f"worksheet_update_{start_cell}",
+                )
+            print(f"  Wrote rows {i + 1}-{i + len(chunk)}.")
     print(f"[OK] Wrote {len(rows)} rows to sheet '{SHEET_NAME}' (last updated: {timestamp})")

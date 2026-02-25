@@ -2,11 +2,14 @@
 Webflow CMS API v2 client. Pulls article URLs and publish dates from a single collection.
 """
 import re
+import time
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
+from requests import Response
+from requests.exceptions import RequestException, Timeout
 
 from config import (
     WEBFLOW_API_TOKEN,
@@ -18,6 +21,8 @@ from config import (
 BASE_URL = "https://api.webflow.com/v2"
 PAGE_SIZE = 100
 EASTERN = ZoneInfo("America/New_York")
+MAX_RETRIES = 4
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 def _format_publish_datetime(iso_str: str) -> str:
@@ -47,6 +52,28 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _request_with_retries(url: str, params: dict[str, Any]) -> Response:
+    """GET Webflow endpoint with retry/backoff for transient failures."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(url, headers=_headers(), params=params, timeout=30)
+            if resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES:
+                time.sleep(2 ** (attempt - 1))
+                continue
+            resp.raise_for_status()
+            return resp
+        except Timeout as e:
+            if attempt < MAX_RETRIES:
+                time.sleep(2 ** (attempt - 1))
+                continue
+            raise RuntimeError(f"Webflow request timed out after {MAX_RETRIES} attempts: {url}") from e
+        except RequestException as e:
+            if attempt < MAX_RETRIES:
+                time.sleep(2 ** (attempt - 1))
+                continue
+            raise RuntimeError(f"Webflow request failed after {MAX_RETRIES} attempts: {url}") from e
+
+
 def fetch_all_items() -> list[dict[str, Any]]:
     """
     Fetch published items from the configured Webflow collection with pagination (live endpoint).
@@ -58,8 +85,7 @@ def fetch_all_items() -> list[dict[str, Any]]:
     while True:
         url = f"{BASE_URL}/collections/{WEBFLOW_COLLECTION_ID}/items/live"
         params = {"limit": PAGE_SIZE, "offset": offset}
-        resp = requests.get(url, headers=_headers(), params=params, timeout=30)
-        resp.raise_for_status()
+        resp = _request_with_retries(url, params)
         data = resp.json()
         items = data.get("items", [])
         all_items.extend(items)

@@ -44,11 +44,27 @@ else:
     GOOGLE_SERVICE_ACCOUNT_JSON = _raw_json
 
 # Optional
-TRAFFIC_DAYS = int(os.getenv("TRAFFIC_DAYS", "30"))
+def _parse_int_env(name: str, default: int) -> tuple[int, str]:
+    """Parse integer env var safely without raising at import time."""
+    raw = os.getenv(name, str(default))
+    if raw is None:
+        return default, ""
+    raw = raw.strip()
+    if raw == "":
+        return default, ""
+    try:
+        value = int(raw)
+        return value, ""
+    except ValueError:
+        return default, f"{name} must be an integer (got '{raw}')"
+
+
+TRAFFIC_DAYS, _traffic_days_err = _parse_int_env("TRAFFIC_DAYS", 30)
 # Only fetch GA4 for articles published in the last N days; older articles keep last-known traffic from sheet
-REFRESH_DAYS = int(os.getenv("REFRESH_DAYS", "7"))
+REFRESH_DAYS, _refresh_days_err = _parse_int_env("REFRESH_DAYS", 7)
 # Optional one-time backfill: when set (e.g. "2025"), only that year's articles with full-year GA4 traffic
 BACKFILL_YEAR = os.getenv("BACKFILL_YEAR", "").strip()
+_PARSE_ERRORS = [e for e in (_traffic_days_err, _refresh_days_err) if e]
 
 
 def _credentials_ok() -> tuple[bool, str]:
@@ -83,8 +99,36 @@ def validate_config() -> list[str]:
     cred_ok, cred_err = _credentials_ok()
     if not cred_ok:
         errors.append(cred_err)
+    errors.extend(_PARSE_ERRORS)
     if TRAFFIC_DAYS < 1:
         errors.append("TRAFFIC_DAYS (must be >= 1)")
     if REFRESH_DAYS < 1:
         errors.append("REFRESH_DAYS (must be >= 1)")
     return errors
+
+
+def get_safe_diagnostics() -> dict:
+    """Return non-secret config diagnostics for health/debug endpoints."""
+    return {
+        "webflow": {
+            "token_set": bool(WEBFLOW_API_TOKEN),
+            "collection_id_set": bool(WEBFLOW_COLLECTION_ID),
+            "site_domain_set": bool(WEBFLOW_SITE_DOMAIN),
+            "url_prefix": WEBFLOW_URL_PREFIX or "/",
+        },
+        "google": {
+            "ga4_property_id_set": bool(GA4_PROPERTY_ID),
+            "sheet_id_set": bool(GOOGLE_SHEET_ID),
+            "sheet_name": SHEET_NAME,
+            "service_account_file_set": bool(SERVICE_ACCOUNT_FILE),
+            "service_account_file_exists": bool(SERVICE_ACCOUNT_FILE and os.path.isfile(SERVICE_ACCOUNT_FILE)),
+            "service_account_json_set": bool(GOOGLE_SERVICE_ACCOUNT_JSON),
+            "credentials_valid": _credentials_ok()[0],
+        },
+        "runtime": {
+            "traffic_days": TRAFFIC_DAYS,
+            "refresh_days": REFRESH_DAYS,
+            "backfill_year": BACKFILL_YEAR or None,
+            "parse_errors": list(_PARSE_ERRORS),
+        },
+    }
