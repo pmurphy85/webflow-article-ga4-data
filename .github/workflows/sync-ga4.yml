@@ -1,0 +1,39 @@
+name: Sync Webflow articles with GA4 data
+
+on:
+  schedule:
+    # Run daily at 9 AM Eastern Time
+    # Note: GitHub Actions cron runs in UTC. 9 AM EST = 14:00 UTC, 9 AM EDT = 13:00 UTC
+    # Using 14:00 UTC covers 9 AM EST (winter); during EDT (summer) it will be 10 AM ET
+    - cron: '0 14 * * *'
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Sync articles and GA4 traffic
+        env:
+          WEBFLOW_API_TOKEN: ${{ secrets.WEBFLOW_API_TOKEN }}
+          WEBFLOW_COLLECTION_ID: ${{ secrets.WEBFLOW_COLLECTION_ID }}
+          WEBFLOW_URL_PREFIX: ${{ secrets.WEBFLOW_URL_PREFIX }}
+          GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          REFRESH_DAYS: ${{ vars.REFRESH_DAYS || '7' }}
+          HYDRATE_MISSING_LIMIT: ${{ vars.HYDRATE_MISSING_LIMIT || '10' }}
+          HYDRATE_ZERO_OLDER: ${{ vars.HYDRATE_ZERO_OLDER || 'false' }}
+          BACKFILL_YEAR: ${{ vars.BACKFILL_YEAR || '' }}
+        run: python main.py
