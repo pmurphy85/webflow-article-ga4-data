@@ -147,6 +147,17 @@ def write_article_traffic(rows: list[dict[str, Any]]) -> None:
             )
     except FuturesTimeoutError:
         raise RuntimeError(f"Sheet clear timed out after {SHEETS_REQUEST_TIMEOUT}s. Try a smaller sheet or check network.") from None
+    # clear() wipes values but does NOT resize the grid; grow it so the write range stays within grid limits.
+    needed_rows = max(len(all_cells), 1)
+    needed_cols = max(len(headers), 1)
+    if needed_rows > worksheet.row_count or needed_cols > worksheet.col_count:
+        target_rows = max(needed_rows, worksheet.row_count)
+        target_cols = max(needed_cols, worksheet.col_count)
+        print(f"Resizing grid to {target_rows} rows x {target_cols} cols...")
+        _retry_call(
+            lambda: worksheet.resize(rows=target_rows, cols=target_cols),
+            "worksheet_resize",
+        )
     print("Cleared. Writing in batches...")
     if all_cells:
         batch_size = 250
